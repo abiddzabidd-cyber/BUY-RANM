@@ -1,228 +1,190 @@
 require("dotenv").config();
-const fs = require("fs");
 const {
   Client,
   GatewayIntentBits,
-  REST,
+  Partials,
+  SlashCommandBuilder,
   Routes,
-  EmbedBuilder,
-  PermissionFlagsBits
+  REST,
+  PermissionsBitField
 } = require("discord.js");
+const fs = require("fs");
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers
+  ],
+  partials: [Partials.Channel]
 });
 
-/* ================= DATABASE ================= */
-
-const dbFile = "./database.json";
-
-function loadDB() {
-  if (!fs.existsSync(dbFile)) {
-    fs.writeFileSync(dbFile, "{}");
-  }
-  return JSON.parse(fs.readFileSync(dbFile));
-}
-
-function saveDB(data) {
-  fs.writeFileSync(dbFile, JSON.stringify(data, null, 2));
-}
-
-function ensureUser(db, userId) {
-  if (!db[userId]) {
-    db[userId] = {
-      balance: 0,
-      lastDaily: 0
-    };
-  }
-}
-
-/* ================= ROLE CONFIG ================= */
-
-const ROLES = {
-  knight: { id: "1473625327879323730", price: 1000, name: "Knight" },
-  queen: { id: "1473625651486527488", price: 5000, name: "Power Queen" },
-  king: { id: "1473626042504577189", price: 10000, name: "The Invincible King" }
-};
+const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
 
 const LOG_CHANNEL_ID = "1473628722870358181";
 
-/* ================= SLASH COMMAND ================= */
+const ROLES = {
+  knight: {
+    id: "1473625327879323730",
+    price: 5000
+  },
+  queen: {
+    id: "1473625651486527488",
+    price: 15000
+  },
+  king: {
+    id: "1473626042504577189",
+    price: 30000
+  }
+};
+
+const DB_FILE = "./database.json";
+let db = {};
+
+if (fs.existsSync(DB_FILE)) {
+  db = JSON.parse(fs.readFileSync(DB_FILE));
+} else {
+  fs.writeFileSync(DB_FILE, JSON.stringify({}));
+}
+
+function saveDB() {
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
+
+function getUser(userId) {
+  if (!db[userId]) {
+    db[userId] = {
+      coins: 0,
+      xp: 0,
+      level: 1,
+      lastDaily: 0,
+      lastXP: 0
+    };
+  }
+  return db[userId];
+}
+
+/* ================= COMMANDS ================= */
 
 const commands = [
-  { name: "balance", description: "Cek saldo kamu" },
-  { name: "daily", description: "Claim koin harian" },
-  { name: "work", description: "Kerja untuk dapat koin" },
-  { name: "store", description: "Lihat role store" },
-  {
-    name: "buy",
-    description: "Beli role",
-    options: [
-      {
-        name: "role",
-        description: "Pilih role",
-        type: 3,
-        required: true,
-        choices: [
+  new SlashCommandBuilder()
+    .setName("balance")
+    .setDescription("Cek balance kamu"),
+
+  new SlashCommandBuilder()
+    .setName("daily")
+    .setDescription("Ambil daily reward"),
+
+  new SlashCommandBuilder()
+    .setName("buy")
+    .setDescription("Beli rank")
+    .addStringOption(option =>
+      option.setName("rank")
+        .setDescription("Pilih rank")
+        .setRequired(true)
+        .addChoices(
           { name: "Knight", value: "knight" },
           { name: "Power Queen", value: "queen" },
           { name: "The Invincible King", value: "king" }
-        ]
-      }
-    ]
-  },
-  {
-    name: "addmoney",
-    description: "Tambah saldo user (Admin only)",
-    default_member_permissions: PermissionFlagsBits.Administrator.toString(),
-    options: [
-      {
-        name: "user",
-        description: "User target",
-        type: 6,
-        required: true
-      },
-      {
-        name: "amount",
-        description: "Jumlah koin",
-        type: 4,
-        required: true
-      }
-    ]
-  }
-];
-
-const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
-
-(async () => {
-  await rest.put(
-    Routes.applicationGuildCommands(
-      process.env.CLIENT_ID,
-      process.env.GUILD_ID
+        )
     ),
+
+  new SlashCommandBuilder()
+    .setName("addmoney")
+    .setDescription("Admin: Tambah coin")
+    .addUserOption(option =>
+      option.setName("user")
+        .setDescription("Target user")
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option.setName("amount")
+        .setDescription("Jumlah coin")
+        .setRequired(true)
+    )
+].map(cmd => cmd.toJSON());
+
+const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+client.once("ready", async () => {
+  console.log(`Bot online sebagai ${client.user.tag}`);
+  await rest.put(
+    Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
     { body: commands }
   );
-})();
-
-/* ================= READY ================= */
-
-client.once("clientReady", () => {
-  console.log(`Bot online sebagai ${client.user.tag}`);
 });
 
-/* ================= INTERACTION ================= */
+/* ================= SLASH HANDLER ================= */
 
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  const db = loadDB();
-  const userId = interaction.user.id;
+  const userData = getUser(interaction.user.id);
 
-  ensureUser(db, userId);
-
-  /* ===== BALANCE ===== */
   if (interaction.commandName === "balance") {
-    return interaction.reply(
-      `💰 Saldo kamu: ${db[userId].balance} coins`
-    );
+    return interaction.reply({
+      content: `💰 Coins: ${userData.coins}\n📊 Level: ${userData.level}\n⭐ XP: ${userData.xp}`,
+      ephemeral: true
+    });
   }
 
-  /* ===== DAILY ===== */
   if (interaction.commandName === "daily") {
     const now = Date.now();
     const cooldown = 24 * 60 * 60 * 1000;
 
-    if (now - db[userId].lastDaily < cooldown) {
-      const remaining =
-        cooldown - (now - db[userId].lastDaily);
-
-      const hours = Math.floor(remaining / (1000 * 60 * 60));
-
+    if (now - userData.lastDaily < cooldown) {
       return interaction.reply({
-        content: `❌ Daily sudah di-claim. Coba lagi ${hours} jam lagi.`,
+        content: "⏳ Kamu sudah ambil daily hari ini!",
         ephemeral: true
       });
     }
 
-    db[userId].balance += 2000;
-    db[userId].lastDaily = now;
-    saveDB(db);
+    userData.coins += 1000;
+    userData.lastDaily = now;
+    saveDB();
 
-    return interaction.reply("✅ Kamu dapat 2000 coins!");
+    return interaction.reply("✅ Kamu mendapat 1000 coins!");
   }
 
-  /* ===== WORK ===== */
-  if (interaction.commandName === "work") {
-    const amount = Math.floor(Math.random() * 1000) + 500;
-    db[userId].balance += amount;
-    saveDB(db);
-
-    return interaction.reply(
-      `💼 Kamu kerja dan dapat ${amount} coins`
-    );
-  }
-
-  /* ===== STORE ===== */
-  if (interaction.commandName === "store") {
-    return interaction.reply(
-      `🛒 STORE:\n` +
-      `Knight - ${ROLES.knight.price}\n` +
-      `Power Queen - ${ROLES.queen.price}\n` +
-      `The Invincible King - ${ROLES.king.price}`
-    );
-  }
-
-  /* ===== BUY ===== */
   if (interaction.commandName === "buy") {
-    const choice = interaction.options.getString("role");
-    const data = ROLES[choice];
+    const rank = interaction.options.getString("rank");
+    const roleData = ROLES[rank];
 
-    if (!data)
+    if (userData.coins < roleData.price) {
       return interaction.reply({
-        content: "Role tidak ditemukan",
-        ephemeral: true
-      });
-
-    const role = interaction.guild.roles.cache.get(data.id);
-
-    if (interaction.member.roles.cache.has(data.id)) {
-      return interaction.reply({
-        content: "❌ Kamu sudah punya role ini!",
+        content: "❌ Coin kamu tidak cukup!",
         ephemeral: true
       });
     }
 
-    if (db[userId].balance < data.price) {
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+
+    if (member.roles.cache.has(roleData.id)) {
       return interaction.reply({
-        content: "❌ Saldo tidak cukup!",
+        content: "❌ Kamu sudah punya rank ini!",
         ephemeral: true
       });
     }
 
-    db[userId].balance -= data.price;
-    saveDB(db);
+    userData.coins -= roleData.price;
+    await member.roles.add(roleData.id);
+    saveDB();
 
-    await interaction.member.roles.add(role);
-
-    interaction.reply(
-      `✅ Berhasil beli ${data.name}. Sisa saldo: ${db[userId].balance}`
-    );
-
-    const logChannel =
-      interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
-
+    const logChannel = interaction.guild.channels.cache.get(LOG_CHANNEL_ID);
     if (logChannel) {
-      logChannel.send(
-        `🧾 ${interaction.user.tag} membeli ${data.name}`
-      );
+      logChannel.send(`🛒 ${interaction.user.tag} membeli rank ${rank}`);
     }
+
+    return interaction.reply(`👑 Berhasil membeli rank ${rank}!`);
   }
 
-  /* ===== ADDMONEY (ADMIN) ===== */
   if (interaction.commandName === "addmoney") {
-    if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)) {
       return interaction.reply({
-        content: "❌ Hanya admin yang bisa pakai command ini.",
+        content: "❌ Hanya admin!",
         ephemeral: true
       });
     }
@@ -230,15 +192,43 @@ client.on("interactionCreate", async interaction => {
     const target = interaction.options.getUser("user");
     const amount = interaction.options.getInteger("amount");
 
-    ensureUser(db, target.id);
+    const targetData = getUser(target.id);
+    targetData.coins += amount;
+    saveDB();
 
-    db[target.id].balance += amount;
-    saveDB(db);
-
-    interaction.reply(
-      `✅ Berhasil menambahkan ${amount} coins ke ${target.tag}`
-    );
+    return interaction.reply(`✅ Berhasil menambahkan ${amount} coins ke ${target.tag}`);
   }
 });
 
-client.login(process.env.TOKEN);
+/* ================= XP SYSTEM ================= */
+
+client.on("messageCreate", message => {
+  if (message.author.bot) return;
+  if (!message.guild) return;
+  if (message.content.length < 5) return;
+
+  const userData = getUser(message.author.id);
+  const now = Date.now();
+
+  if (now - userData.lastXP < 60000) return; // 1 menit cooldown
+
+  const xpGain = Math.floor(Math.random() * 16) + 10; // 10-25 XP
+  userData.xp += xpGain;
+  userData.lastXP = now;
+
+  const requiredXP = userData.level * 100;
+
+  if (userData.xp >= requiredXP) {
+    userData.xp -= requiredXP;
+    userData.level += 1;
+    userData.coins += 200;
+
+    message.channel.send(
+      `🎉 ${message.author} naik ke Level ${userData.level} dan mendapat 200 coins!`
+    );
+  }
+
+  saveDB();
+});
+
+client.login(TOKEN);
